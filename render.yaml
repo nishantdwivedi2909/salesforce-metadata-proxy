@@ -3,7 +3,7 @@ services:
     name: salesforce-metadata-proxy
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn salesforce_api_proxy:app --host 0.0.0.0 --port $PORT
+    startCommand: gunicorn salesforce_api_proxy:app --bind 0.0.0.0:$PORT
     envVars:
       - key: FLASK_ENV
         value: production
