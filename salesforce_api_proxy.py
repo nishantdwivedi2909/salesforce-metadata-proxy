@@ -52,6 +52,93 @@ def debug_info():
         "cors_enabled": True
     })
 
+@app.route('/api/validate-session', methods=['POST', 'OPTIONS'])
+def validate_session():
+    """Validate Salesforce session token"""
+    if request.method == 'OPTIONS':
+        return handle_preflight()
+    
+    try:
+        data = request.get_json()
+        
+        if not data or 'instanceUrl' not in data or 'sessionId' not in data:
+            return jsonify({
+                "valid": False,
+                "error": "Missing required fields: instanceUrl, sessionId"
+            }), 400
+        
+        instance_url = data['instanceUrl']
+        session_id = data['sessionId']
+        
+        # Test session with a simple query
+        sf_url = f"{instance_url}/services/data/{SALESFORCE_API_VERSION}/query/"
+        headers = {
+            'Authorization': f'Bearer {session_id}',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        }
+        
+        # Simple test query
+        params = {'q': 'SELECT Id FROM User LIMIT 1'}
+        
+        logger.info(f"Validating session for: {instance_url}")
+        logger.info(f"Session ID format: {session_id[:10]}...{session_id[-10:] if len(session_id) > 20 else ''}")
+        
+        response = requests.get(sf_url, headers=headers, params=params, timeout=15)
+        
+        if response.status_code == 200:
+            result = response.json()
+            return jsonify({
+                "valid": True,
+                "message": "Session is valid",
+                "test_query_results": result.get('totalSize', 0),
+                "session_info": {
+                    "length": len(session_id),
+                    "starts_with": session_id[:10],
+                    "instance": instance_url
+                }
+            })
+        elif response.status_code == 401:
+            try:
+                error_data = response.json()
+                return jsonify({
+                    "valid": False,
+                    "error": "Invalid or expired session",
+                    "salesforce_error": error_data,
+                    "suggestions": [
+                        "Get a fresh session ID from Salesforce",
+                        "Check that you're using the correct Salesforce instance",
+                        "Ensure the session hasn't expired"
+                    ]
+                })
+            except:
+                return jsonify({
+                    "valid": False,
+                    "error": "Session validation failed",
+                    "response_code": response.status_code
+                })
+        else:
+            return jsonify({
+                "valid": False,
+                "error": f"Unexpected response code: {response.status_code}",
+                "response_text": response.text[:200]
+            })
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Session validation request error: {e}")
+        return jsonify({
+            "valid": False,
+            "error": "Network error during validation",
+            "details": str(e)
+        }), 500
+    except Exception as e:
+        logger.error(f"Session validation error: {e}")
+        return jsonify({
+            "valid": False,
+            "error": "Validation error",
+            "details": str(e)
+        }), 500
+
 @app.route('/api/query', methods=['POST', 'OPTIONS'])
 def proxy_query():
     """Proxy SOQL queries to Salesforce"""
@@ -109,6 +196,37 @@ def proxy_query():
             result = response.json()
             logger.info(f"Query successful: {result.get('totalSize', 0)} records returned")
             return jsonify(result)
+        elif response.status_code == 401:
+            # Handle authentication errors specifically
+            logger.error(f"Authentication failed: {response.text}")
+            try:
+                error_data = response.json()
+                return jsonify({
+                    "error": "Authentication failed",
+                    "status_code": 401,
+                    "salesforce_error": error_data,
+                    "troubleshooting": {
+                        "issue": "Session expired or invalid",
+                        "solutions": [
+                            "Get a fresh session ID from Salesforce browser",
+                            "Open F12 DevTools → Network tab → Look for /services/data/ calls",
+                            "Copy Authorization header value (after 'Bearer ')",
+                            "Use the extension's Debug Session feature to input new session"
+                        ],
+                        "session_info": {
+                            "provided_length": len(session_id),
+                            "first_10_chars": session_id[:10],
+                            "instance_url": instance_url
+                        }
+                    }
+                }), 401
+            except:
+                return jsonify({
+                    "error": "Authentication failed",
+                    "status_code": 401,
+                    "message": "Session expired or invalid",
+                    "raw_response": response.text
+                }), 401
         else:
             logger.error(f"Salesforce API error: {response.status_code} - {response.text}")
             return jsonify({
